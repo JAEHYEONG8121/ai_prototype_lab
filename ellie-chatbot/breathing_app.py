@@ -317,12 +317,14 @@ def set_waiting_context(
 
 def show_numbered_step(
     step: dict[str, Any],
+    *,
+    is_final: bool = False,
 ) -> None:
     """
-    Show exactly one numbered script line and always wait for a response.
+    Show exactly one numbered script line.
 
-    The original expects_input value is intentionally ignored because every
-    numbered item must wait for participant input.
+    Non-final steps always wait for a response. The final step (Goodbye)
+    ends the session immediately without waiting for another input.
     """
     add_message(
         role="assistant",
@@ -334,6 +336,10 @@ def show_numbered_step(
     st.session_state.current_step_id = (
         step["id"]
     )
+
+    if is_final:
+        finish_session()
+        return
 
     set_waiting_context(
         kind="numbered",
@@ -352,8 +358,15 @@ def show_next_numbered_step() -> None:
 
     step = script[index]
     st.session_state.next_step_index += 1
+    is_final = (
+        st.session_state.next_step_index
+        >= len(script)
+    )
 
-    show_numbered_step(step)
+    show_numbered_step(
+        step,
+        is_final=is_final,
+    )
 
 
 def show_auxiliary_prompt(
@@ -867,7 +880,6 @@ if "started" not in st.session_state:
 
 
 st.title("Ellie")
-st.caption("Fixed-script research chatbot")
 
 
 if not st.session_state.started:
