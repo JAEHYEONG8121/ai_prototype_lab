@@ -13,6 +13,7 @@ from drive_upload import (
     upload_session_artifacts,
 )
 from scripts import SCRIPTS
+from ui_helpers import stick_to_bottom
 
 
 APP_CONDITION = "Breathing"
@@ -1005,7 +1006,5 @@ if not st.session_state.finished:
 
 
 if st.session_state.finished:
-    st.success(
-        "The session is complete. "
-        "Thank you for your participation."
-    )
+    # Stay at the end of the chat (Goodbye) instead of jumping to the top.
+    stick_to_bottom()
