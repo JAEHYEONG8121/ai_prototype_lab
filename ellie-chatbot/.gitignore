@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.py[cod]
+.DS_Store
+
+# Never commit real credentials.
+.streamlit/secrets.toml
+.env
+.env.*
+
+# Do not commit participant data.
+results/
+*.csv
+*.json
