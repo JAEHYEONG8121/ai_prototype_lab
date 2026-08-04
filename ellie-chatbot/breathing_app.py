@@ -75,6 +75,8 @@ has_elaboration
 valid_if_then
 - true only when the participant gives an IF condition or situation,
   followed by a THEN action or plan.
+- In Korean, accept equivalent forms such as
+  "만약 ... 다면, ... 것이다" / "만약 ... 면, ... 하겠다".
 - false otherwise.
 
 The response may be in English, Korean, or another language.
@@ -584,8 +586,8 @@ def analyze_or_show_retry(
 
         show_auxiliary_prompt(
             content=(
-                "Sorry, I didn't catch that. "
-                "Could you say that again?"
+                "죄송해요, 잘 이해하지 못했어요. "
+                "다시 한 번 말씀해 주시겠어요?"
             ),
             step_id=step_id,
             waiting_kind="api_retry",
@@ -884,17 +886,17 @@ st.title("Ellie")
 
 
 if not st.session_state.started:
-    st.subheader("Session setup")
+    st.subheader("세션 설정")
 
     with st.form("session_setup"):
         participant_id = st.text_input(
-            "Participant ID",
-            placeholder="Example: P001",
+            "참가자 ID",
+            placeholder="예: P001",
         )
 
         submitted = (
             st.form_submit_button(
-                "Start session",
+                "세션 시작",
                 use_container_width=True,
             )
         )
@@ -902,7 +904,7 @@ if not st.session_state.started:
     if submitted:
         if not participant_id.strip():
             st.error(
-                "Participant ID를 입력해주세요."
+                "참가자 ID를 입력해주세요."
             )
         else:
             initialize_session(
@@ -991,12 +993,12 @@ for message in st.session_state.messages:
 
 if not st.session_state.finished:
     user_text = st.chat_input(
-        "Type your answer"
+        "답변을 입력해 주세요"
     )
 
     if user_text:
         with st.spinner(
-            "Processing..."
+            "처리 중..."
         ):
             process_user_input(
                 user_text
@@ -1007,8 +1009,8 @@ if not st.session_state.finished:
 
 if st.session_state.finished:
     st.success(
-        "The session is complete. "
-        "Thank you for your participation."
+        "세션이 종료되었습니다. "
+        "참여해 주셔서 감사합니다."
     )
     # Stay at the end of the chat instead of jumping to the top.
     stick_to_bottom()

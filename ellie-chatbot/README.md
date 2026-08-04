@@ -1,6 +1,6 @@
 # Ellie Chatbot
 
-고정 스크립트 연구용 Streamlit 챗봇입니다. Connection / Breathing 앱이 분리되어 있습니다.
+고정 스크립트 연구용 Streamlit 챗봇입니다. Connection / Breathing 앱이 분리되어 있으며, 스크립트는 한국어입니다.
 
 ```text
 ellie-chatbot/
