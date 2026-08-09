@@ -16,17 +16,6 @@ from scripts import SCRIPTS
 from ui_helpers import stick_to_bottom
 
 
-APP_CONDITION = "Breathing"
-
-
-st.set_page_config(
-    page_title="Ellie Scripted Chatbot",
-    page_icon="💬",
-    layout="centered",
-    initial_sidebar_state="collapsed",
-)
-
-
 CLASSIFICATION_SCHEMA = {
     "type": "object",
     "properties": {
@@ -463,9 +452,15 @@ def upload_results_to_drive() -> None:
         )
         return
 
+    condition_slug = (
+        st.session_state.condition
+        .lower()
+        .replace("+", "and")
+        .replace(" ", "_")
+    )
     base_name = (
         f"{st.session_state.participant_id}_"
-        f"{st.session_state.condition.lower()}_"
+        f"{condition_slug}_"
         f"{st.session_state.finished_at_utc.replace(':', '-')}"
     )
 
@@ -865,152 +860,160 @@ def result_csv_bytes() -> bytes:
     )
 
 
-api_key, selected_model = (
-    load_openai_settings()
-)
-
-if not api_key:
-    st.error(
-        "OpenAI API 키가 설정되지 않았습니다. "
-        "`.streamlit/secrets.toml`에 "
-        "`OPENAI_API_KEY`를 입력해주세요."
+def run_app(app_condition: str) -> None:
+    """Run one fixed-condition Ellie Streamlit app."""
+    st.set_page_config(
+        page_title="Ellie Scripted Chatbot",
+        page_icon="💬",
+        layout="centered",
+        initial_sidebar_state="collapsed",
     )
-    st.stop()
 
-
-if "started" not in st.session_state:
-    st.session_state.started = False
-
-
-st.title("Ellie")
-
-
-if not st.session_state.started:
-    st.subheader("세션 설정")
-
-    with st.form("session_setup"):
-        participant_id = st.text_input(
-            "참가자 ID",
-            placeholder="예: P001",
+    if app_condition not in SCRIPTS:
+        st.error(
+            f"알 수 없는 조건입니다: `{app_condition}`"
         )
+        st.stop()
 
-        submitted = (
-            st.form_submit_button(
-                "세션 시작",
-                use_container_width=True,
+    api_key, selected_model = (
+        load_openai_settings()
+    )
+
+    if not api_key:
+        st.error(
+            "OpenAI API 키가 설정되지 않았습니다. "
+            "`.streamlit/secrets.toml`에 "
+            "`OPENAI_API_KEY`를 입력해주세요."
+        )
+        st.stop()
+
+    if "started" not in st.session_state:
+        st.session_state.started = False
+
+    st.title("Ellie")
+
+    if not st.session_state.started:
+        st.subheader("세션 설정")
+
+        with st.form("session_setup"):
+            participant_id = st.text_input(
+                "참가자 ID",
+                placeholder="예: P001",
             )
+
+            submitted = (
+                st.form_submit_button(
+                    "세션 시작",
+                    use_container_width=True,
+                )
+            )
+
+        if submitted:
+            if not participant_id.strip():
+                st.error(
+                    "참가자 ID를 입력해주세요."
+                )
+            else:
+                initialize_session(
+                    participant_id,
+                    app_condition,
+                )
+                st.rerun()
+
+        st.stop()
+
+    with st.sidebar:
+        st.subheader("Researcher view")
+
+        st.write(
+            "Participant: "
+            f"`{st.session_state.participant_id}`"
+        )
+        st.write(
+            "Condition: "
+            f"`{app_condition}`"
+        )
+        st.write(
+            "OpenAI model: "
+            f"`{selected_model}`"
+        )
+        st.write(
+            "Current step: "
+            f"`{st.session_state.current_step_id}`"
+        )
+        st.write(
+            "API analyses: "
+            f"`{len(st.session_state.api_analyses)}`"
         )
 
-    if submitted:
-        if not participant_id.strip():
-            st.error(
-                "참가자 ID를 입력해주세요."
+        if st.session_state.finished:
+            st.write(
+                "Current state: `Finished`"
             )
         else:
-            initialize_session(
-                participant_id,
-                APP_CONDITION,
+            context = (
+                st.session_state.waiting_context
             )
+
+            state_text = (
+                context["kind"]
+                if context
+                else "processing"
+            )
+
+            st.write(
+                "Current state: "
+                f"`{state_text}`"
+            )
+
+        if st.session_state.last_api_error:
+            st.error(
+                "Last API error\n\n"
+                f"`{st.session_state.last_api_error}`"
+            )
+
+        drive_status = st.session_state.get(
+            "drive_upload_status"
+        )
+        if drive_status:
+            st.write(
+                "Drive upload: "
+                f"`{drive_status}`"
+            )
+
+        if st.button(
+            "Restart session",
+            use_container_width=True,
+        ):
+            reset_session()
+
+    for message in st.session_state.messages:
+        with st.chat_message(
+            message["role"]
+        ):
+            st.markdown(
+                message["content"]
+            )
+
+    if not st.session_state.finished:
+        user_text = st.chat_input(
+            "답변을 입력해 주세요"
+        )
+
+        if user_text:
+            with st.spinner(
+                "처리 중..."
+            ):
+                process_user_input(
+                    user_text
+                )
+
             st.rerun()
 
-    st.stop()
-
-
-with st.sidebar:
-    st.subheader("Researcher view")
-
-    st.write(
-        "Participant: "
-        f"`{st.session_state.participant_id}`"
-    )
-    st.write(
-        "Condition: "
-        f"`{APP_CONDITION}`"
-    )
-    st.write(
-        "OpenAI model: "
-        f"`{selected_model}`"
-    )
-    st.write(
-        "Current step: "
-        f"`{st.session_state.current_step_id}`"
-    )
-    st.write(
-        "API analyses: "
-        f"`{len(st.session_state.api_analyses)}`"
-    )
-
     if st.session_state.finished:
-        st.write(
-            "Current state: `Finished`"
+        st.success(
+            "세션이 종료되었습니다. "
+            "참여해 주셔서 감사합니다."
         )
-    else:
-        context = (
-            st.session_state.waiting_context
-        )
-
-        state_text = (
-            context["kind"]
-            if context
-            else "processing"
-        )
-
-        st.write(
-            "Current state: "
-            f"`{state_text}`"
-        )
-
-    if st.session_state.last_api_error:
-        st.error(
-            "Last API error\n\n"
-            f"`{st.session_state.last_api_error}`"
-        )
-
-    drive_status = st.session_state.get(
-        "drive_upload_status"
-    )
-    if drive_status:
-        st.write(
-            "Drive upload: "
-            f"`{drive_status}`"
-        )
-
-    if st.button(
-        "Restart session",
-        use_container_width=True,
-    ):
-        reset_session()
-
-
-for message in st.session_state.messages:
-    with st.chat_message(
-        message["role"]
-    ):
-        st.markdown(
-            message["content"]
-        )
-
-
-if not st.session_state.finished:
-    user_text = st.chat_input(
-        "답변을 입력해 주세요"
-    )
-
-    if user_text:
-        with st.spinner(
-            "처리 중..."
-        ):
-            process_user_input(
-                user_text
-            )
-
-        st.rerun()
-
-
-if st.session_state.finished:
-    st.success(
-        "세션이 종료되었습니다. "
-        "참여해 주셔서 감사합니다."
-    )
-    # Stay at the end of the chat instead of jumping to the top.
-    stick_to_bottom()
+        # Stay at the end of the chat instead of jumping to the top.
+        stick_to_bottom()
