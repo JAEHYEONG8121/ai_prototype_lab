@@ -26,14 +26,26 @@ CLASSIFICATION_SCHEMA = {
         "has_elaboration": {
             "type": "boolean",
         },
+        "content_ok": {
+            "type": "boolean",
+        },
         "valid_if_then": {
+            "type": "boolean",
+        },
+        "if_then_count": {
+            "type": "integer",
+        },
+        "is_example_copy": {
             "type": "boolean",
         },
     },
     "required": [
         "answer_type",
         "has_elaboration",
+        "content_ok",
         "valid_if_then",
+        "if_then_count",
+        "is_example_copy",
     ],
     "additionalProperties": False,
 }
@@ -52,7 +64,7 @@ Rules:
 answer_type
 - yes: affirmative, agreement, willingness, confirmation, or a positive answer.
 - no: denial, disagreement, unwillingness, no experience, no attempt,
-  or no perceived benefit.
+  no opportunity, or no perceived benefit.
 - unclear: too ambiguous to determine yes or no.
 - other: yes/no is not relevant.
 
@@ -61,12 +73,26 @@ has_elaboration
   situation, explanation, or intended action beyond a bare yes/no.
 - false: only a short answer such as yes, no, sure, okay, or an equivalent.
 
+content_ok
+- If content_criterion is empty/null: set true.
+- Otherwise true only when the response adequately addresses that criterion.
+- Off-topic, empty, or unrelated answers are false.
+
 valid_if_then
-- true only when the participant gives an IF condition or situation,
-  followed by a THEN action or plan.
-- In Korean, accept equivalent forms such as
-  "만약 ... 다면, ... 것이다" / "만약 ... 면, ... 하겠다".
+- true when the response contains at least one IF condition/situation
+  followed by a THEN action/plan.
+- In Korean, accept forms such as
+  "만약 ... 라면, ... 것이다" / "만약 ... 면, ... 하겠다".
 - false otherwise.
+
+if_then_count
+- Count how many distinct IF-THEN plans are present.
+- Use 0 when none are valid.
+
+is_example_copy
+- true if the response is substantially the same as example_if_then
+  (copy/paste or trivial paraphrase of the chatbot example).
+- false if example_if_then is empty/null or the response is original.
 
 The response may be in English, Korean, or another language.
 """
@@ -147,8 +173,17 @@ def parse_function_call(
                 "has_elaboration": bool(
                     parsed["has_elaboration"]
                 ),
+                "content_ok": bool(
+                    parsed.get("content_ok", True)
+                ),
                 "valid_if_then": bool(
                     parsed["valid_if_then"]
+                ),
+                "if_then_count": int(
+                    parsed.get("if_then_count", 0)
+                ),
+                "is_example_copy": bool(
+                    parsed.get("is_example_copy", False)
                 ),
             }
 
@@ -176,9 +211,11 @@ def analyze_participant_response(
     step_id: int,
     prompt: str,
     participant_response: str,
+    content_criterion: str | None = None,
+    example_if_then: str | None = None,
 ) -> dict[str, Any]:
     """
-    Use OpenAI only when a scripted branch or validation requires it.
+    Use OpenAI when a scripted branch or validation requires it.
 
     A forced function call is used instead of response.output_text.
     """
@@ -196,6 +233,8 @@ def analyze_participant_response(
         "step_id": step_id,
         "script_prompt": prompt,
         "participant_response": participant_response,
+        "content_criterion": content_criterion or "",
+        "example_if_then": example_if_then or "",
     }
 
     last_error: Exception | None = None
@@ -254,6 +293,11 @@ def analyze_participant_response(
         "OpenAI 응답 분석에 실패했습니다. "
         f"{type(last_error).__name__}: {last_error}"
     )
+
+
+def is_too_short(text: str, min_chars: int) -> bool:
+    return len(text.strip()) <= min_chars
+
 
 
 def add_message(
@@ -540,8 +584,17 @@ def save_api_analysis(
             "has_elaboration": (
                 analysis["has_elaboration"]
             ),
+            "content_ok": analysis.get(
+                "content_ok", True
+            ),
             "valid_if_then": (
                 analysis["valid_if_then"]
+            ),
+            "if_then_count": analysis.get(
+                "if_then_count", 0
+            ),
+            "is_example_copy": analysis.get(
+                "is_example_copy", False
             ),
             "model": analysis["model"],
             "response_id": (
@@ -557,6 +610,8 @@ def analyze_or_show_retry(
     step_id: int,
     prompt: str,
     user_text: str,
+    content_criterion: str | None = None,
+    example_if_then: str | None = None,
 ) -> dict[str, Any] | None:
     try:
         analysis = analyze_participant_response(
@@ -564,6 +619,8 @@ def analyze_or_show_retry(
             step_id=step_id,
             prompt=prompt,
             participant_response=user_text,
+            content_criterion=content_criterion,
+            example_if_then=example_if_then,
         )
 
         save_api_analysis(
@@ -597,13 +654,41 @@ def process_numbered_response(
     step_id: int,
     prompt: str,
     user_text: str,
+    skip_length_check: bool = False,
+    opportunity_followup: bool = False,
 ) -> None:
     step = get_step(step_id)
 
-    # API is called only where the supplied script has a branch or validator.
+    min_chars = step.get("min_chars")
+    if (
+        not skip_length_check
+        and min_chars is not None
+        and is_too_short(user_text, min_chars)
+    ):
+        too_short_prompt = step.get(
+            "too_short_prompt"
+        )
+        if opportunity_followup:
+            too_short_prompt = step.get(
+                "if_no_too_short_prompt",
+                too_short_prompt,
+            )
+        show_auxiliary_prompt(
+            content=too_short_prompt,
+            step_id=step_id,
+            waiting_kind=(
+                "opportunity_create"
+                if opportunity_followup
+                else "length_retry"
+            ),
+            message_kind="validation",
+        )
+        return
+
     needs_api = bool(
         step.get("branch")
         or step.get("validator")
+        or step.get("content_criterion")
     )
 
     analysis: dict[str, Any] | None = None
@@ -613,14 +698,22 @@ def process_numbered_response(
             step_id=step_id,
             prompt=prompt,
             user_text=user_text,
+            content_criterion=step.get(
+                "content_criterion"
+            ),
+            example_if_then=step.get(
+                "example_if_then"
+            ),
         )
 
         if analysis is None:
             return
 
-    # Number 7: explicit If No branch.
     if (
-        step.get("branch") == "experience"
+        step.get("branch") in {
+            "experience",
+            "willingness",
+        }
         and analysis is not None
         and analysis["answer_type"] == "no"
     ):
@@ -632,7 +725,20 @@ def process_numbered_response(
         )
         return
 
-    # Number 11: explicit No and Yes-without-elaboration branches.
+    if (
+        step.get("branch") == "opportunity"
+        and analysis is not None
+        and analysis["answer_type"] == "no"
+        and not opportunity_followup
+    ):
+        show_auxiliary_prompt(
+            content=step["if_no"],
+            step_id=step_id,
+            waiting_kind="opportunity_create",
+            message_kind="conditional",
+        )
+        return
+
     if (
         step.get("branch") == "benefit"
         and analysis is not None
@@ -664,21 +770,103 @@ def process_numbered_response(
             )
             return
 
-    # Number 19: explicit IF–THEN validation.
     if (
-        step.get("validator") == "if_then"
+        step.get("content_criterion")
         and analysis is not None
-        and not analysis["valid_if_then"]
+        and not analysis.get("content_ok", True)
+        and step.get("validator") not in {
+            "if_then",
+            "if_then_two",
+        }
     ):
         show_auxiliary_prompt(
-            content=step["invalid_response"],
+            content=step.get(
+                "content_retry",
+                "조금 더 구체적으로 말씀해 주실 수 있나요?",
+            ),
             step_id=step_id,
-            waiting_kind="if_then_retry",
+            waiting_kind="content_retry",
             message_kind="validation",
         )
         return
 
-    # One human response produces one next numbered assistant message.
+    if (
+        step.get("validator") == "if_then_two"
+        and analysis is not None
+    ):
+        if analysis.get("is_example_copy"):
+            show_auxiliary_prompt(
+                content=step["example_copy_prompt"],
+                step_id=step_id,
+                waiting_kind="if_then_retry",
+                message_kind="validation",
+            )
+            return
+
+        count = int(
+            analysis.get("if_then_count", 0)
+        )
+        if (
+            not analysis["valid_if_then"]
+            or count < 1
+        ):
+            show_auxiliary_prompt(
+                content=step["invalid_response"],
+                step_id=step_id,
+                waiting_kind="if_then_retry",
+                message_kind="validation",
+            )
+            return
+
+        if count == 1:
+            show_auxiliary_prompt(
+                content=step["need_second_prompt"],
+                step_id=step_id,
+                waiting_kind="if_then_second",
+                message_kind="validation",
+            )
+            return
+
+        if not analysis.get("content_ok", True):
+            show_auxiliary_prompt(
+                content=step["content_retry"],
+                step_id=step_id,
+                waiting_kind="if_then_retry",
+                message_kind="validation",
+            )
+            return
+
+        show_next_numbered_step()
+        return
+
+    if (
+        step.get("validator") == "if_then"
+        and analysis is not None
+    ):
+        if not analysis["valid_if_then"]:
+            show_auxiliary_prompt(
+                content=step["invalid_response"],
+                step_id=step_id,
+                waiting_kind="if_then_retry",
+                message_kind="validation",
+            )
+            return
+
+        if (
+            step.get("content_criterion")
+            and not analysis.get("content_ok", True)
+        ):
+            show_auxiliary_prompt(
+                content=step["content_retry"],
+                step_id=step_id,
+                waiting_kind="if_then_retry",
+                message_kind="validation",
+            )
+            return
+
+        show_next_numbered_step()
+        return
+
     show_next_numbered_step()
 
 
@@ -688,22 +876,54 @@ def process_if_then_retry(
     prompt: str,
     user_text: str,
 ) -> None:
+    process_numbered_response(
+        step_id=step_id,
+        prompt=prompt,
+        user_text=user_text,
+        skip_length_check=True,
+    )
+
+
+def process_if_then_second(
+    *,
+    step_id: int,
+    prompt: str,
+    user_text: str,
+) -> None:
+    step = get_step(step_id)
     analysis = analyze_or_show_retry(
         step_id=step_id,
         prompt=prompt,
         user_text=user_text,
+        content_criterion=step.get(
+            "content_criterion"
+        ),
+        example_if_then=step.get(
+            "example_if_then"
+        ),
     )
 
     if analysis is None:
         return
 
-    step = get_step(step_id)
-
-    if not analysis["valid_if_then"]:
+    if (
+        analysis.get("is_example_copy")
+        or not analysis["valid_if_then"]
+        or int(analysis.get("if_then_count", 0)) < 1
+    ):
         show_auxiliary_prompt(
             content=step["invalid_response"],
             step_id=step_id,
-            waiting_kind="if_then_retry",
+            waiting_kind="if_then_second",
+            message_kind="validation",
+        )
+        return
+
+    if not analysis.get("content_ok", True):
+        show_auxiliary_prompt(
+            content=step["content_retry"],
+            step_id=step_id,
+            waiting_kind="if_then_second",
             message_kind="validation",
         )
         return
@@ -718,8 +938,6 @@ def process_api_retry(
 ) -> None:
     """
     Re-run the original numbered step analysis after an API failure.
-
-    The original numbered prompt is recovered from scripts.py.
     """
     step = get_step(step_id)
 
@@ -768,8 +986,36 @@ def process_user_input(
         )
         return
 
+    if waiting_kind in {
+        "length_retry",
+        "content_retry",
+    }:
+        process_numbered_response(
+            step_id=step_id,
+            prompt=get_step(step_id)["text"],
+            user_text=user_text,
+        )
+        return
+
+    if waiting_kind == "opportunity_create":
+        process_numbered_response(
+            step_id=step_id,
+            prompt=get_step(step_id)["text"],
+            user_text=user_text,
+            opportunity_followup=True,
+        )
+        return
+
     if waiting_kind == "if_then_retry":
         process_if_then_retry(
+            step_id=step_id,
+            prompt=prompt,
+            user_text=user_text,
+        )
+        return
+
+    if waiting_kind == "if_then_second":
+        process_if_then_second(
             step_id=step_id,
             prompt=prompt,
             user_text=user_text,
@@ -787,6 +1033,17 @@ def process_user_input(
         "branch_ack",
         "benefit_elaboration",
     }:
+        # After elaboration, re-check benefit content when needed.
+        if waiting_kind == "benefit_elaboration":
+            step = get_step(step_id)
+            if step.get("content_criterion"):
+                process_numbered_response(
+                    step_id=step_id,
+                    prompt=step["text"],
+                    user_text=user_text,
+                    skip_length_check=True,
+                )
+                return
         show_next_numbered_step()
         return
 
